@@ -64,54 +64,46 @@ fn main() -> Result<()> {
                     .flat_map(|GMDLog(entries)| entries.into_iter())
                     .collect::<Vec<_>>()
                     .pipe(GMDLog)
-                    .pipe(|log| {
-                        log.pipe_ref(GMDSummary::from_log)
-                            .map(|summary| {
-                                summary
-                                    .0
-                                    .values()
-                                    .flat_map(|day| day.state.iter())
-                                    .sorted_unstable_by_key(|(_, quantity)| quantity.amount)
-                                    .rev()
-                                    .map(|(name, _)| name)
-                                    .unique_by(|name| *name)
-                                    .collect_vec()
-                                    .pipe(|tracked_products| {
-                                        once(
-                                            once("day".to_string())
-                                                .chain(
-                                                    tracked_products
-                                                        .iter()
-                                                        .map(|name| name.to_string()),
-                                                )
-                                                .collect_vec(),
-                                        )
-                                        .chain(
-                                            summary
-                                                .0
-                                                .iter()
-                                                .map(|(day, GMDDay { state, .. })| {
-                                                    once(day.to_string())
-                                                        .chain(tracked_products.iter().map(
-                                                            |product| {
-                                                                state
-                                                                    .get(product)
-                                                                    .copied()
-                                                                    .map(|v| v.to_string())
-                                                                    .unwrap_or_else(|| "~".into())
-                                                            },
-                                                        ))
-                                                        .collect_vec()
-                                                })
-                                                .collect_vec(),
-                                        )
-                                    })
-                                    .pipe(tabled::tables::IterTable::new)
-                                    .to_string()
+                    .pipe_ref(GMDSummary::from_log)
+                    .map(|summary| {
+                        summary
+                            .0
+                            .values()
+                            .flat_map(|day| day.state.iter())
+                            .sorted_unstable_by_key(|(_, quantity)| quantity.amount)
+                            .rev()
+                            .map(|(name, _)| name)
+                            .unique_by(|name| *name)
+                            .collect_vec()
+                            .pipe(|tracked_products| {
+                                once(
+                                    once("day".to_string())
+                                        .chain(tracked_products.iter().map(|name| name.to_string()))
+                                        .collect_vec(),
+                                )
+                                .chain(
+                                    summary
+                                        .0
+                                        .iter()
+                                        .map(|(day, GMDDay { state, .. })| {
+                                            once(day.to_string())
+                                                .chain(tracked_products.iter().map(|product| {
+                                                    state
+                                                        .get(product)
+                                                        .copied()
+                                                        .map(|v| v.to_string())
+                                                        .unwrap_or_else(|| "~".into())
+                                                }))
+                                                .collect_vec()
+                                        })
+                                        .collect_vec(),
+                                )
                             })
-                            .map(|table| {
-                                println!("{table}");
-                            })
+                            .pipe(tabled::tables::IterTable::new)
+                            .to_string()
+                    })
+                    .map(|table| {
+                        println!("{table}");
                     })
             })
     })
