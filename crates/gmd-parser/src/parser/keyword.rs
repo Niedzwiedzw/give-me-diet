@@ -60,5 +60,5 @@ macro_rules! keyword {
 keyword!(MINUS, "-");
 keyword!(PERCENT, "%");
 keyword!(OF, "of");
-keyword!(DEFINE, "of");
+keyword!(DEFINE, "define");
 keyword!(EAT, "eat");

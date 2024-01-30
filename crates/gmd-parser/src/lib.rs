@@ -70,11 +70,11 @@ pub mod calculator {
         ops::{Div, Mul, MulAssign},
     };
     use tap::prelude::*;
-    use tracing::warn;
+    use tracing::{info, info_span, warn};
 
     #[derive(Default, Debug)]
     pub struct GMDDay<'input> {
-        pub state: BTreeMap<ProductName, Vec<Quantity>>,
+        pub state: BTreeMap<ProductName, Quantity>,
         pub defined_products: BTreeMap<&'input ProductName, &'input ProductDefinition>,
     }
 
@@ -117,12 +117,13 @@ pub mod calculator {
     }
 
     impl Quantity {
-        pub fn ratio(self, other: Quantity) -> Option<Ratio> {
+        pub fn ratio(self, other: Quantity) -> Result<Ratio> {
             match (self.unit, other.unit) {
                 (left, right) if left == right => left.pipe(Some),
                 _other => None,
             }
             .map(|_| self.amount.div(&other.amount).pipe(Ratio))
+            .with_context(|| format!("cannot calculate ratio of {self:?} within {other:?}"))
         }
     }
 
@@ -132,7 +133,7 @@ pub mod calculator {
     }
 
     impl Quantity {
-        pub fn of_ingredient(
+        pub fn of_ingredients(
             self,
             product: &ProductDefinition,
         ) -> Result<NonEmpty<AmountOf<&ProductName>>> {
@@ -140,32 +141,28 @@ pub mod calculator {
                 .ingredients
                 .as_ref()
                 .ok_or_else(|| eyre!("product [{:?}] has no ingredients", product.name))
-                .and_then(|ingredients| {
-                    ingredients.inner.as_ref().try_map(|ingredient| {
-                        ingredient
-                            .quantity
-                            .ratio(ingredients.quantity)
-                            .ok_or_else(|| {
-                                eyre!(
-                                    "cannot calculate ratio of [{:?}] within {:?}",
-                                    ingredient.quantity,
-                                    ingredients.quantity
-                                )
-                            })
-                            .with_context(|| {
-                                format!(
-                                    "calculating ratio of [{:?}] in [{:?}]",
-                                    ingredient.inner, product.name
-                                )
-                            })
-                            .map(|ratio| {
-                                self.mul(ratio).pipe(|quantity| AmountOf {
-                                    quantity,
-                                    inner: &ingredient.inner,
+                .and_then(
+                    |AmountOf {
+                         quantity,
+                         inner: ingredients,
+                     }| {
+                        ingredients.as_ref().try_map(|ingredient| {
+                            self.ratio(*quantity)
+                                .with_context(|| {
+                                    format!(
+                                        "calculating ratio of [{:?}] in [{:?}]",
+                                        ingredient.inner, product.name
+                                    )
                                 })
-                            })
-                    })
-                })
+                                .map(|ratio| {
+                                    ingredient.quantity.mul(ratio).pipe(|quantity| AmountOf {
+                                        quantity,
+                                        inner: &ingredient.inner,
+                                    })
+                                })
+                        })
+                    },
+                )
         }
     }
 
@@ -192,7 +189,7 @@ pub mod calculator {
             product: &ProductDefinition,
             amount: Quantity,
         ) -> Result<NonEmpty<AmountOf<&ProductDefinition>>> {
-            amount.of_ingredient(product).and_then(|ingredients| {
+            amount.of_ingredients(product).and_then(|ingredients| {
                 ingredients.try_map(|ingredient| {
                     ingredient.try_map_inner(|name| {
                         self.definition(name)
@@ -238,52 +235,66 @@ pub mod calculator {
         pub fn from_log(log: &'input GMDLog) -> Result<Self> {
             log.0
                 .iter()
-                .try_fold(GMDSummaryBuilder::new(), |acc, next| match next {
-                    LogEntry::StartDay(StartDay(day)) => acc
-                        .tap_mut(|acc| {
-                            acc.current.0.entry(*day).or_default();
-                        })
-                        .pipe(Ok),
-                    LogEntry::Define(product) => acc
-                        .tap_mut(|acc| {
-                            acc.current
-                                .0
-                                .entry(acc.current_day)
-                                .or_default()
-                                .defined_products
-                                .insert(&product.name, product);
-                        })
-                        .pipe(Ok),
-                    LogEntry::Eat(Eat(AmountOf {
-                        quantity,
-                        inner: product_name,
-                    })) => acc
-                        .definition(product_name)
-                        .with_context(|| format!("product [{product_name:?}] is not defined"))
-                        .map(|definition| {
-                            acc.flatten_product(definition, *quantity)
-                                .map(|inner| inner.map_inner(Clone::clone))
-                                .collect_vec()
-                        })
-                        .map(|eaten| {
-                            acc.tap_mut(|acc| {
-                                eaten.into_iter().for_each(
-                                    |AmountOf {
-                                         quantity,
-                                         inner: product_name,
-                                     }| {
-                                        acc.current
-                                            .0
-                                            .entry(acc.current_day)
-                                            .or_default()
-                                            .state
-                                            .entry(product_name)
-                                            .or_default()
-                                            .push(quantity)
-                                    },
-                                )
+                .try_fold(GMDSummaryBuilder::new(), |acc, next| {
+                    let _span = info_span!("handling event", day=%acc.current_day).entered();
+                    info!(event=?next);
+                    match next {
+                        LogEntry::StartDay(StartDay(day)) => acc
+                            .tap_mut(|acc| {
+                                let _ = acc.current.0.entry(*day).or_insert_with(|| {
+                                    tracing::info!("starting next day");
+                                    Default::default()
+                                });
+                                acc.current_day = *day;
                             })
-                        }),
+                            .pipe(Ok),
+                        LogEntry::Define(product) => acc
+                            .tap_mut(|acc| {
+                                acc.current
+                                    .0
+                                    .entry(acc.current_day)
+                                    .or_default()
+                                    .defined_products
+                                    .insert(&product.name, product);
+                            })
+                            .pipe(Ok),
+                        LogEntry::Eat(Eat(AmountOf {
+                            quantity,
+                            inner: product_name,
+                        })) => acc
+                            .definition(product_name)
+                            .with_context(|| format!("product [{product_name:?}] is not defined"))
+                            .map(|definition| {
+                                acc.flatten_product(definition, *quantity)
+                                    .map(|inner| inner.map_inner(Clone::clone))
+                                    .collect_vec()
+                            })
+                            .and_then(|eaten| {
+                                acc.pipe(|mut acc| {
+                                    eaten
+                                        .into_iter()
+                                        .try_for_each(
+                                            |AmountOf {
+                                                 quantity,
+                                                 inner: product_name,
+                                             }| {
+                                                acc.current
+                                                    .0
+                                                    .entry(acc.current_day)
+                                                    .or_default()
+                                                    .state
+                                                    .entry(product_name)
+                                                    .or_insert_with(|| Quantity {
+                                                        amount: Default::default(),
+                                                        unit: quantity.unit,
+                                                    })
+                                                    .try_add(quantity)
+                                            },
+                                        )
+                                        .map(|_| acc)
+                                })
+                            }),
+                    }
                 })
                 .map(|GMDSummaryBuilder { current, .. }| current)
         }

@@ -1,6 +1,5 @@
-use super::*;
 use crate::{models::GMDLog, parser::FromGMD};
-use eyre::{Result, WrapErr};
+use eyre::Result;
 
 #[test]
 #[ignore]

@@ -1,3 +1,4 @@
+use eyre::{eyre, Result};
 use nonempty::NonEmpty;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -6,9 +7,35 @@ use tap::prelude::*;
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize, Clone, Copy, Default)]
 pub struct Gram;
 
-#[derive(Debug, Eq, PartialEq, Serialize, Deserialize, Clone, Copy, derive_more::From)]
+impl std::fmt::Display for Gram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "g")
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize, Clone, Copy, Default)]
+pub struct Kcal;
+
+impl std::fmt::Display for Kcal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "kcal")
+    }
+}
+
+#[derive(
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Clone,
+    Copy,
+    derive_more::From,
+    derive_more::Display,
+)]
 pub enum UnitOfMeasure {
     Gram(Gram),
+    Kcal(Kcal),
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Clone, Copy)]
@@ -17,17 +44,42 @@ pub struct Quantity {
     pub unit: UnitOfMeasure,
 }
 
+impl std::fmt::Display for Quantity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.pipe_ref(|Self { amount, unit }| write!(f, "{}{}", amount.normalize(), unit))
+    }
+}
+
 impl Quantity {
+    pub fn try_add(&mut self, other: Self) -> Result<()> {
+        match (self.unit, other.unit) {
+            (one, two) if one == two => {
+                self.amount += other.amount;
+                Ok(())
+            }
+            (one, two) => Err(eyre!("incompatible units of measure: [{one}, {two}]")),
+        }
+    }
     pub fn of<T>(self, inner: T) -> AmountOf<T> {
         AmountOf {
             quantity: self,
-            inner: inner.into(),
+            inner,
         }
     }
 }
 
 #[derive(
-    Debug, Serialize, Deserialize, PartialOrd, Ord, PartialEq, Eq, Clone, transpare::Transpare,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+    Clone,
+    transpare::Transpare,
+    derive_more::Display,
+    Hash,
 )]
 pub struct ProductNameKind<Name>(pub Name);
 
@@ -96,13 +148,12 @@ mod tests {
     use super::*;
     use crate::calculator::GMDSummary;
     use chrono::NaiveDate;
-    use eyre::{ContextCompat, Result, WrapErr};
+    use eyre::{ContextCompat, Result};
     use itertools::Itertools;
     use pretty_assertions::assert_eq;
     use rust_decimal::prelude::FromPrimitive;
     use rust_decimal_macros::dec;
     use std::iter::{empty, once};
-    use tap::prelude::*;
 
     #[test]
     fn test_sample_input() -> Result<()> {
@@ -185,20 +236,18 @@ mod tests {
                         .tap_ok(|summary| println!("SUMMARY\n{summary:#?}\n"))
                         .and_then(|summary| {
                             assert_eq!(
-                                [Quantity {
+                                Quantity {
                                     amount: dec!(3.43),
                                     unit: Gram.into()
-                                }]
-                                .as_slice(),
-                                summary
+                                },
+                                *summary
                                     .0
                                     .get(&today)
                                     .context("no such day")
                                     .and_then(|day| day
                                         .state
                                         .get(&ProductName::new("Protein"))
-                                        .context("no such product"))
-                                    .map(|v| v.as_slice())?,
+                                        .context("no such product"))?,
                             );
                             Ok(())
                         })
